@@ -63,10 +63,20 @@ ASSEMBLYAI_WHISPER_STREAMING_BENCHMARK_LANGUAGES = {
 }
 
 
+# "AssemblyAI" is kept for universal-streaming-multilingual to match previously
+# published leaderboard artifacts.
+ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL = {
+    "universal-3-5-pro": "AssemblyAI Universal-3.5 Pro",
+    "universal-streaming-multilingual": "AssemblyAI",
+}
+
+
 class AssemblyAIStreamingAdapter:
     """Replay full turns through AssemblyAI Streaming STT and score native turn detection."""
 
-    display_name = "AssemblyAI"
+    @property
+    def display_name(self) -> str:
+        return ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL.get(self.model, f"AssemblyAI {self.model}")
 
     def __init__(
         self,

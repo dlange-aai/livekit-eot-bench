@@ -78,7 +78,7 @@ def test_assemblyai_defaults_and_key(monkeypatch):
     adapter = AssemblyAIStreamingAdapter()
 
     assert adapter.adapter_id == "assemblyai/universal-3-5-pro"
-    assert adapter.display_name == "AssemblyAI"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro"
     assert not hasattr(adapter, "score_point")
     assert resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY") == "aai-test-key"
     assert adapter._connection_params() == {
@@ -112,6 +112,13 @@ def test_assemblyai_u3_rt_pro_language_support():
         assert adapter.supports_language(lang), lang
     assert not adapter.supports_language("ja")
     assert not adapter.supports_language("tr")
+
+
+def test_assemblyai_display_name_tracks_model():
+    assert AssemblyAIStreamingAdapter(model="universal-3-5-pro").display_name == "AssemblyAI Universal-3.5 Pro"
+    # Matches the committed leaderboard artifacts for the previous default model.
+    assert AssemblyAIStreamingAdapter(model="universal-streaming-multilingual").display_name == "AssemblyAI"
+    assert AssemblyAIStreamingAdapter(model="u3-rt-pro").display_name == "AssemblyAI u3-rt-pro"
 
 
 def test_assemblyai_universal_streaming_multilingual_keeps_confidence_threshold():

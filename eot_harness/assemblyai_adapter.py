@@ -18,11 +18,31 @@ from .streaming_stt import (
     resolve_api_key,
 )
 
-DEFAULT_ASSEMBLYAI_MODEL = "universal-streaming-multilingual"
+DEFAULT_ASSEMBLYAI_MODEL = "universal-3-5-pro"
 DEFAULT_CONCURRENCY = 4
 DEFAULT_MIN_TURN_SILENCE_MS = 100
 DEFAULT_MAX_TURN_SILENCE_MS = 3000
 DEFAULT_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.1
+# U3 Pro models use punctuation-based turn detection; `end_of_turn_confidence_threshold`
+# is not part of their API and only applies to the older universal-streaming models.
+ASSEMBLYAI_U3_PRO_FAMILY_MODELS = {"universal-3-5-pro", "u3-rt-pro"}
+# Benchmark languages within universal-3-5-pro's 18 supported languages
+# (en, es, de, fr, pt, it, tr, nl, sv, no, da, fi, hi, vi, ar, he, ja, zh).
+ASSEMBLYAI_UNIVERSAL_3_5_PRO_SUPPORTED_LANGUAGES = {
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "it",
+    "ja",
+    "nl",
+    "pt",
+    "tr",
+    "zh",
+}
+ASSEMBLYAI_U3_RT_PRO_SUPPORTED_LANGUAGES = {"en", "es", "de", "fr", "pt", "it"}
 ASSEMBLYAI_UNIVERSAL_STREAMING_MULTILINGUAL_SUPPORTED_LANGUAGES = {"en", "es", "de", "fr", "pt", "it"}
 ASSEMBLYAI_UNIVERSAL_STREAMING_EN_SUPPORTED_LANGUAGES = {"en"}
 ASSEMBLYAI_WHISPER_STREAMING_BENCHMARK_LANGUAGES = {
@@ -91,6 +111,10 @@ class AssemblyAIStreamingAdapter:
         return f"assemblyai/{self.model}"
 
     def supports_language(self, lang_code: str) -> bool:
+        if self.model == "universal-3-5-pro":
+            return supports_language_code(lang_code, ASSEMBLYAI_UNIVERSAL_3_5_PRO_SUPPORTED_LANGUAGES)
+        if self.model == "u3-rt-pro":
+            return supports_language_code(lang_code, ASSEMBLYAI_U3_RT_PRO_SUPPORTED_LANGUAGES)
         if self.model == "universal-streaming-multilingual":
             return supports_language_code(lang_code, ASSEMBLYAI_UNIVERSAL_STREAMING_MULTILINGUAL_SUPPORTED_LANGUAGES)
         if self.model == "universal-streaming-english":
@@ -168,7 +192,10 @@ class AssemblyAIStreamingAdapter:
             params["min_turn_silence"] = str(int(self.min_turn_silence))
         if self.max_turn_silence is not None:
             params["max_turn_silence"] = str(int(self.max_turn_silence))
-        if self.end_of_turn_confidence_threshold is not None:
+        if (
+            self.end_of_turn_confidence_threshold is not None
+            and self.model not in ASSEMBLYAI_U3_PRO_FAMILY_MODELS
+        ):
             params["end_of_turn_confidence_threshold"] = str(float(self.end_of_turn_confidence_threshold))
         return params
 

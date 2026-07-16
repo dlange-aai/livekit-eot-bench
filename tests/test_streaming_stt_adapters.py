@@ -77,17 +77,50 @@ def test_assemblyai_defaults_and_key(monkeypatch):
     monkeypatch.setenv("ASSEMBLY_API_KEY", "aai-test-key")
     adapter = AssemblyAIStreamingAdapter()
 
-    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro"
     assert adapter.display_name == "AssemblyAI"
     assert not hasattr(adapter, "score_point")
+    assert resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY") == "aai-test-key"
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "min_turn_silence": "100",
+        "max_turn_silence": "3000",
+    }
+
+
+def test_assemblyai_universal_3_5_pro_language_support():
+    adapter = AssemblyAIStreamingAdapter(model="universal-3-5-pro")
+
+    for lang in ("ar", "de", "en", "es", "fr", "hi", "it", "ja", "nl", "pt", "tr", "zh"):
+        assert adapter.supports_language(lang), lang
+    assert not adapter.supports_language("id")
+    assert not adapter.supports_language("ko")
+
+
+def test_assemblyai_u3_pro_models_omit_end_of_turn_confidence_threshold():
+    for model in ("universal-3-5-pro", "u3-rt-pro"):
+        adapter = AssemblyAIStreamingAdapter(model=model, end_of_turn_confidence_threshold=0.1)
+        assert "end_of_turn_confidence_threshold" not in adapter._connection_params(), model
+
+
+def test_assemblyai_u3_rt_pro_language_support():
+    adapter = AssemblyAIStreamingAdapter(model="u3-rt-pro")
+
+    for lang in ("en", "es", "de", "fr", "pt", "it"):
+        assert adapter.supports_language(lang), lang
+    assert not adapter.supports_language("ja")
+    assert not adapter.supports_language("tr")
+
+
+def test_assemblyai_universal_streaming_multilingual_keeps_confidence_threshold():
+    adapter = AssemblyAIStreamingAdapter(model="universal-streaming-multilingual")
+
+    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
     assert adapter.supports_language("en")
-    assert adapter.supports_language("fr")
-    assert adapter.supports_language("de")
-    assert adapter.supports_language("es")
-    assert adapter.supports_language("it")
     assert adapter.supports_language("pt")
     assert not adapter.supports_language("ja")
-    assert resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY") == "aai-test-key"
     assert adapter._connection_params() == {
         "speech_model": "universal-streaming-multilingual",
         "encoding": "pcm_s16le",
@@ -96,6 +129,15 @@ def test_assemblyai_defaults_and_key(monkeypatch):
         "max_turn_silence": "3000",
         "end_of_turn_confidence_threshold": "0.1",
     }
+
+
+def test_assemblyai_cli_style_model_override_rebinds_params_and_languages():
+    adapter = AssemblyAIStreamingAdapter()
+    adapter.model = "universal-streaming-multilingual"
+
+    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
+    assert adapter._connection_params()["end_of_turn_confidence_threshold"] == "0.1"
+    assert not adapter.supports_language("ja")
 
 
 def test_assemblyai_english_model_supports_only_english():

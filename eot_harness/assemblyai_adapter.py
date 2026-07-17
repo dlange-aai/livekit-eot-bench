@@ -26,6 +26,9 @@ DEFAULT_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.1
 # U3 Pro models use punctuation-based turn detection; `end_of_turn_confidence_threshold`
 # is not part of their API and only applies to the older universal-streaming models.
 ASSEMBLYAI_U3_PRO_FAMILY_MODELS = {"universal-3-5-pro", "u3-rt-pro"}
+# `mode` presets are U3 Pro-only and set the server-side defaults for turn-silence,
+# interruption-delay, and VAD parameters that are not sent explicitly.
+ASSEMBLYAI_MODES = {"min_latency", "balanced", "max_accuracy"}
 # Benchmark languages within universal-3-5-pro's 18 supported languages
 # (en, es, de, fr, pt, it, tr, nl, sv, no, da, fi, hi, vi, ar, he, ja, zh).
 ASSEMBLYAI_UNIVERSAL_3_5_PRO_SUPPORTED_LANGUAGES = {
@@ -76,12 +79,16 @@ class AssemblyAIStreamingAdapter:
 
     @property
     def display_name(self) -> str:
-        return ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL.get(self.model, f"AssemblyAI {self.model}")
+        name = ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL.get(self.model, f"AssemblyAI {self.model}")
+        if self.mode is not None:
+            name = f"{name} ({self.mode})"
+        return name
 
     def __init__(
         self,
         *,
         model: str = DEFAULT_ASSEMBLYAI_MODEL,
+        mode: str | None = None,
         chunk_ms: int = DEFAULT_CHUNK_MS,
         concurrency: int = DEFAULT_CONCURRENCY,
         min_turn_silence: int | None = DEFAULT_MIN_TURN_SILENCE_MS,
@@ -90,6 +97,8 @@ class AssemblyAIStreamingAdapter:
     ) -> None:
         if not model:
             raise ValueError("model must be a non-empty string")
+        if mode is not None and mode not in ASSEMBLYAI_MODES:
+            raise ValueError(f"mode must be one of {sorted(ASSEMBLYAI_MODES)}")
         if chunk_ms <= 0:
             raise ValueError("chunk_ms must be positive")
         if concurrency <= 0:
@@ -108,6 +117,7 @@ class AssemblyAIStreamingAdapter:
             raise ValueError("end_of_turn_confidence_threshold must be in [0, 1]")
 
         self.model = model
+        self.mode = mode
         self.chunk_ms = int(chunk_ms)
         self.concurrency = int(concurrency)
         self.min_turn_silence = None if min_turn_silence is None else int(min_turn_silence)
@@ -118,6 +128,8 @@ class AssemblyAIStreamingAdapter:
 
     @property
     def adapter_id(self) -> str:
+        if self.mode is not None:
+            return f"assemblyai/{self.model}-mode-{self.mode}"
         return f"assemblyai/{self.model}"
 
     def supports_language(self, lang_code: str) -> bool:
@@ -198,6 +210,8 @@ class AssemblyAIStreamingAdapter:
             "encoding": "pcm_s16le",
             "sample_rate": str(SAMPLE_RATE),
         }
+        if self.mode is not None and self.model in ASSEMBLYAI_U3_PRO_FAMILY_MODELS:
+            params["mode"] = self.mode
         if self.min_turn_silence is not None:
             params["min_turn_silence"] = str(int(self.min_turn_silence))
         if self.max_turn_silence is not None:
@@ -208,6 +222,17 @@ class AssemblyAIStreamingAdapter:
         ):
             params["end_of_turn_confidence_threshold"] = str(float(self.end_of_turn_confidence_threshold))
         return params
+
+
+class AssemblyAIBalancedModeAdapter(AssemblyAIStreamingAdapter):
+    """universal-3-5-pro under the `balanced` mode preset with server-default turn-silence settings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "balanced")
+        kwargs.setdefault("min_turn_silence", None)
+        kwargs.setdefault("max_turn_silence", None)
+        kwargs.setdefault("end_of_turn_confidence_threshold", None)
+        super().__init__(**kwargs)
 
 
 async def _recv_assemblyai_events(

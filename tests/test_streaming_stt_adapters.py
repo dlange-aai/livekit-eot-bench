@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from eot_harness.assemblyai_adapter import AssemblyAIStreamingAdapter, _assemblyai_event_from_turn
+from eot_harness.assemblyai_adapter import (
+    AssemblyAIBalancedModeAdapter,
+    AssemblyAIStreamingAdapter,
+    _assemblyai_event_from_turn,
+)
 from eot_harness.openai_realtime_adapter import OpenAIRealtime2Adapter, _openai_speech_stopped_event
 from eot_harness.soniox_adapter import SonioxStreamingAdapter, _soniox_endpoint_event
 from eot_harness.streaming_stt import build_event_prediction_rows, resolve_api_key
@@ -112,6 +116,38 @@ def test_assemblyai_u3_rt_pro_language_support():
         assert adapter.supports_language(lang), lang
     assert not adapter.supports_language("ja")
     assert not adapter.supports_language("tr")
+
+
+def test_assemblyai_mode_validation():
+    with pytest.raises(ValueError, match="mode"):
+        AssemblyAIStreamingAdapter(mode="turbo")
+
+
+def test_assemblyai_mode_param_only_sent_for_u3_pro_models():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced")
+    assert adapter._connection_params()["mode"] == "balanced"
+
+    legacy = AssemblyAIStreamingAdapter(model="universal-streaming-multilingual", mode="balanced")
+    assert "mode" not in legacy._connection_params()
+
+
+def test_assemblyai_mode_is_part_of_adapter_identity():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced")
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (balanced)"
+
+
+def test_assemblyai_balanced_mode_adapter_uses_server_turn_silence_defaults():
+    adapter = AssemblyAIBalancedModeAdapter()
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced"
+    assert adapter.supports_language("ja")
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "mode": "balanced",
+    }
 
 
 def test_assemblyai_display_name_tracks_model():

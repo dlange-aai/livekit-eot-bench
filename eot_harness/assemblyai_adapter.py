@@ -235,6 +235,17 @@ class AssemblyAIBalancedModeAdapter(AssemblyAIStreamingAdapter):
         super().__init__(**kwargs)
 
 
+class AssemblyAIMaxAccuracyModeAdapter(AssemblyAIStreamingAdapter):
+    """universal-3-5-pro under the `max_accuracy` mode preset with server-default turn-silence settings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "max_accuracy")
+        kwargs.setdefault("min_turn_silence", None)
+        kwargs.setdefault("max_turn_silence", None)
+        kwargs.setdefault("end_of_turn_confidence_threshold", None)
+        super().__init__(**kwargs)
+
+
 async def _recv_assemblyai_events(
     ws,
     *,

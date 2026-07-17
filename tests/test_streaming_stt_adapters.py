@@ -4,6 +4,7 @@ import pytest
 
 from eot_harness.assemblyai_adapter import (
     AssemblyAIBalancedModeAdapter,
+    AssemblyAIMaxAccuracyModeAdapter,
     AssemblyAIStreamingAdapter,
     _assemblyai_event_from_turn,
 )
@@ -147,6 +148,19 @@ def test_assemblyai_balanced_mode_adapter_uses_server_turn_silence_defaults():
         "encoding": "pcm_s16le",
         "sample_rate": "16000",
         "mode": "balanced",
+    }
+
+
+def test_assemblyai_max_accuracy_mode_adapter_uses_server_turn_silence_defaults():
+    adapter = AssemblyAIMaxAccuracyModeAdapter()
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-max_accuracy"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (max_accuracy)"
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "mode": "max_accuracy",
     }
 
 

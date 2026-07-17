@@ -607,13 +607,19 @@ Built-in adapter examples:
 - `eot_harness.openai_realtime_adapter:OpenAIRealtime2Adapter`
 
 Streaming STT adapters produce `p_eot` from the provider's native endpointing
-surface. Deepgram Flux and AssemblyAI expose confidence-style scores. Soniox,
+surface. Deepgram Flux exposes confidence-style scores. Soniox,
 and OpenAI Realtime semantic VAD currently map endpoint events to binary scores:
 `0.0` before the provider endpoint event has fired and `1.0` after it has fired.
-The AssemblyAI adapter defaults to `universal-streaming-multilingual` with
-`min_turn_silence=100`, `max_turn_silence=3000`, and
-`end_of_turn_confidence_threshold=0.1` so the harness receives probability-valued
-`end_of_turn_confidence` events across AssemblyAI's supported dataset languages.
+The AssemblyAI adapter defaults to `universal-3-5-pro` (Universal-3.5 Pro
+Streaming) with `min_turn_silence=100` and `max_turn_silence=3000`, covering 12
+of the 14 benchmark languages (all except Indonesian and Korean). U3 Pro models
+use punctuation-based turn detection, so their `end_of_turn_confidence` events
+are effectively binary. The previous models remain available via `--model`
+(`u3-rt-pro`, `universal-streaming-multilingual`, `universal-streaming-english`,
+`whisper-rt`); the universal-streaming models expose probability-valued
+`end_of_turn_confidence` events and receive
+`end_of_turn_confidence_threshold=0.1`, a parameter that is not part of the U3
+Pro API and is omitted from U3 Pro connections.
 
 `LiveKitTurnDetectorAdapter` is a streaming adapter that scores each turn
 with the LiveKit Turn Detector v1 (`turn-detector-v1`) cloud model over the

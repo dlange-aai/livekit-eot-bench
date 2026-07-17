@@ -18,11 +18,40 @@ from .streaming_stt import (
     resolve_api_key,
 )
 
-DEFAULT_ASSEMBLYAI_MODEL = "universal-streaming-multilingual"
+DEFAULT_ASSEMBLYAI_MODEL = "universal-3-5-pro"
+DEFAULT_ASSEMBLYAI_STREAMING_URL = "wss://streaming.assemblyai.com/v3/ws"
+# Extra wall-clock allowance beyond the real-time audio replay before a turn is
+# abandoned. Guards against sessions whose server stops consuming audio, which
+# would otherwise hang a concurrency slot forever.
+DEFAULT_WATCHDOG_MARGIN_SEC = 60.0
+DEFAULT_ASSEMBLYAI_API_KEY_ENV = ("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY")
 DEFAULT_CONCURRENCY = 4
 DEFAULT_MIN_TURN_SILENCE_MS = 100
 DEFAULT_MAX_TURN_SILENCE_MS = 3000
 DEFAULT_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.1
+# U3 Pro models use punctuation-based turn detection; `end_of_turn_confidence_threshold`
+# is not part of their API and only applies to the older universal-streaming models.
+ASSEMBLYAI_U3_PRO_FAMILY_MODELS = {"universal-3-5-pro", "u3-rt-pro"}
+# `mode` presets are U3 Pro-only and set the server-side defaults for turn-silence,
+# interruption-delay, and VAD parameters that are not sent explicitly.
+ASSEMBLYAI_MODES = {"min_latency", "balanced", "max_accuracy"}
+# Benchmark languages within universal-3-5-pro's 18 supported languages
+# (en, es, de, fr, pt, it, tr, nl, sv, no, da, fi, hi, vi, ar, he, ja, zh).
+ASSEMBLYAI_UNIVERSAL_3_5_PRO_SUPPORTED_LANGUAGES = {
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "it",
+    "ja",
+    "nl",
+    "pt",
+    "tr",
+    "zh",
+}
+ASSEMBLYAI_U3_RT_PRO_SUPPORTED_LANGUAGES = {"en", "es", "de", "fr", "pt", "it"}
 ASSEMBLYAI_UNIVERSAL_STREAMING_MULTILINGUAL_SUPPORTED_LANGUAGES = {"en", "es", "de", "fr", "pt", "it"}
 ASSEMBLYAI_UNIVERSAL_STREAMING_EN_SUPPORTED_LANGUAGES = {"en"}
 ASSEMBLYAI_WHISPER_STREAMING_BENCHMARK_LANGUAGES = {
@@ -43,15 +72,34 @@ ASSEMBLYAI_WHISPER_STREAMING_BENCHMARK_LANGUAGES = {
 }
 
 
+# "AssemblyAI" is kept for universal-streaming-multilingual to match previously
+# published leaderboard artifacts.
+ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL = {
+    "universal-3-5-pro": "AssemblyAI Universal-3.5 Pro",
+    "universal-streaming-multilingual": "AssemblyAI",
+}
+
+
 class AssemblyAIStreamingAdapter:
     """Replay full turns through AssemblyAI Streaming STT and score native turn detection."""
 
-    display_name = "AssemblyAI"
+    @property
+    def display_name(self) -> str:
+        name = ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL.get(self.model, f"AssemblyAI {self.model}")
+        qualifiers = [part for part in (self.mode, self.variant) if part is not None]
+        if qualifiers:
+            name = f"{name} ({', '.join(qualifiers)})"
+        return name
 
     def __init__(
         self,
         *,
         model: str = DEFAULT_ASSEMBLYAI_MODEL,
+        mode: str | None = None,
+        url: str = DEFAULT_ASSEMBLYAI_STREAMING_URL,
+        api_key_env: tuple[str, ...] = DEFAULT_ASSEMBLYAI_API_KEY_ENV,
+        variant: str | None = None,
+        watchdog_margin_sec: float = DEFAULT_WATCHDOG_MARGIN_SEC,
         chunk_ms: int = DEFAULT_CHUNK_MS,
         concurrency: int = DEFAULT_CONCURRENCY,
         min_turn_silence: int | None = DEFAULT_MIN_TURN_SILENCE_MS,
@@ -60,6 +108,14 @@ class AssemblyAIStreamingAdapter:
     ) -> None:
         if not model:
             raise ValueError("model must be a non-empty string")
+        if mode is not None and mode not in ASSEMBLYAI_MODES:
+            raise ValueError(f"mode must be one of {sorted(ASSEMBLYAI_MODES)}")
+        if not url:
+            raise ValueError("url must be a non-empty string")
+        if not api_key_env:
+            raise ValueError("api_key_env must name at least one environment variable")
+        if watchdog_margin_sec <= 0:
+            raise ValueError("watchdog_margin_sec must be positive")
         if chunk_ms <= 0:
             raise ValueError("chunk_ms must be positive")
         if concurrency <= 0:
@@ -78,6 +134,11 @@ class AssemblyAIStreamingAdapter:
             raise ValueError("end_of_turn_confidence_threshold must be in [0, 1]")
 
         self.model = model
+        self.mode = mode
+        self.url = str(url)
+        self.api_key_env = tuple(api_key_env)
+        self.variant = variant
+        self.watchdog_margin_sec = float(watchdog_margin_sec)
         self.chunk_ms = int(chunk_ms)
         self.concurrency = int(concurrency)
         self.min_turn_silence = None if min_turn_silence is None else int(min_turn_silence)
@@ -88,9 +149,18 @@ class AssemblyAIStreamingAdapter:
 
     @property
     def adapter_id(self) -> str:
-        return f"assemblyai/{self.model}"
+        suffix = self.model
+        if self.mode is not None:
+            suffix = f"{suffix}-mode-{self.mode}"
+        if self.variant is not None:
+            suffix = f"{suffix}-{self.variant}"
+        return f"assemblyai/{suffix}"
 
     def supports_language(self, lang_code: str) -> bool:
+        if self.model == "universal-3-5-pro":
+            return supports_language_code(lang_code, ASSEMBLYAI_UNIVERSAL_3_5_PRO_SUPPORTED_LANGUAGES)
+        if self.model == "u3-rt-pro":
+            return supports_language_code(lang_code, ASSEMBLYAI_U3_RT_PRO_SUPPORTED_LANGUAGES)
         if self.model == "universal-streaming-multilingual":
             return supports_language_code(lang_code, ASSEMBLYAI_UNIVERSAL_STREAMING_MULTILINGUAL_SUPPORTED_LANGUAGES)
         if self.model == "universal-streaming-english":
@@ -105,23 +175,35 @@ class AssemblyAIStreamingAdapter:
         *,
         inference_interval: float = DEFAULT_INFERENCE_INTERVAL,
     ) -> dict[str, Any]:
-        return await self._replay_turn(
-            row,
-            resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY"),
-            inference_interval=inference_interval,
-        )
+        audio_bytes, total_audio_sec = prepare_pcm16_audio(row, sample_rate=SAMPLE_RATE)
+        timeout = total_audio_sec + self.watchdog_margin_sec
+        try:
+            return await asyncio.wait_for(
+                self._replay_turn(
+                    row,
+                    resolve_api_key(*self.api_key_env),
+                    audio_bytes=audio_bytes,
+                    total_audio_sec=total_audio_sec,
+                    inference_interval=inference_interval,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"AssemblyAI turn watchdog timed out after {timeout:.0f}s on row {row['id']!r}.",
+            ) from exc
 
     async def _replay_turn(
         self,
         row: dict[str, Any],
         api_key: str,
         *,
+        audio_bytes: bytes,
+        total_audio_sec: float,
         inference_interval: float,
     ) -> dict[str, Any]:
         websockets = import_websockets()
-        audio_bytes, total_audio_sec = prepare_pcm16_audio(row, sample_rate=SAMPLE_RATE)
-        params = self._connection_params()
-        url = f"wss://streaming.assemblyai.com/v3/ws?{urlencode(params)}"
+        url = self._connection_url()
 
         events: list[dict[str, Any]] = []
         chunk_size = chunk_size_bytes(sample_rate=SAMPLE_RATE, chunk_ms=self.chunk_ms)
@@ -158,19 +240,49 @@ class AssemblyAIStreamingAdapter:
             ),
         }
 
+    def _connection_url(self) -> str:
+        return f"{self.url}?{urlencode(self._connection_params())}"
+
     def _connection_params(self) -> dict[str, str]:
         params = {
             "speech_model": self.model,
             "encoding": "pcm_s16le",
             "sample_rate": str(SAMPLE_RATE),
         }
+        if self.mode is not None and self.model in ASSEMBLYAI_U3_PRO_FAMILY_MODELS:
+            params["mode"] = self.mode
         if self.min_turn_silence is not None:
             params["min_turn_silence"] = str(int(self.min_turn_silence))
         if self.max_turn_silence is not None:
             params["max_turn_silence"] = str(int(self.max_turn_silence))
-        if self.end_of_turn_confidence_threshold is not None:
+        if (
+            self.end_of_turn_confidence_threshold is not None
+            and self.model not in ASSEMBLYAI_U3_PRO_FAMILY_MODELS
+        ):
             params["end_of_turn_confidence_threshold"] = str(float(self.end_of_turn_confidence_threshold))
         return params
+
+
+class AssemblyAIBalancedModeAdapter(AssemblyAIStreamingAdapter):
+    """universal-3-5-pro under the `balanced` mode preset with server-default turn-silence settings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "balanced")
+        kwargs.setdefault("min_turn_silence", None)
+        kwargs.setdefault("max_turn_silence", None)
+        kwargs.setdefault("end_of_turn_confidence_threshold", None)
+        super().__init__(**kwargs)
+
+
+class AssemblyAIMaxAccuracyModeAdapter(AssemblyAIStreamingAdapter):
+    """universal-3-5-pro under the `max_accuracy` mode preset with server-default turn-silence settings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "max_accuracy")
+        kwargs.setdefault("min_turn_silence", None)
+        kwargs.setdefault("max_turn_silence", None)
+        kwargs.setdefault("end_of_turn_confidence_threshold", None)
+        super().__init__(**kwargs)
 
 
 async def _recv_assemblyai_events(

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from eot_harness.assemblyai_adapter import AssemblyAIStreamingAdapter, _assemblyai_event_from_turn
+from eot_harness.assemblyai_adapter import (
+    AssemblyAIBalancedModeAdapter,
+    AssemblyAIMaxAccuracyModeAdapter,
+    AssemblyAIStreamingAdapter,
+    _assemblyai_event_from_turn,
+)
 from eot_harness.openai_realtime_adapter import OpenAIRealtime2Adapter, _openai_speech_stopped_event
 from eot_harness.soniox_adapter import SonioxStreamingAdapter, _soniox_endpoint_event
 from eot_harness.streaming_stt import build_event_prediction_rows, resolve_api_key
@@ -77,17 +82,155 @@ def test_assemblyai_defaults_and_key(monkeypatch):
     monkeypatch.setenv("ASSEMBLY_API_KEY", "aai-test-key")
     adapter = AssemblyAIStreamingAdapter()
 
-    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
-    assert adapter.display_name == "AssemblyAI"
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro"
     assert not hasattr(adapter, "score_point")
+    assert resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY") == "aai-test-key"
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "min_turn_silence": "100",
+        "max_turn_silence": "3000",
+    }
+
+
+def test_assemblyai_universal_3_5_pro_language_support():
+    adapter = AssemblyAIStreamingAdapter(model="universal-3-5-pro")
+
+    for lang in ("ar", "de", "en", "es", "fr", "hi", "it", "ja", "nl", "pt", "tr", "zh"):
+        assert adapter.supports_language(lang), lang
+    assert not adapter.supports_language("id")
+    assert not adapter.supports_language("ko")
+
+
+def test_assemblyai_u3_pro_models_omit_end_of_turn_confidence_threshold():
+    for model in ("universal-3-5-pro", "u3-rt-pro"):
+        adapter = AssemblyAIStreamingAdapter(model=model, end_of_turn_confidence_threshold=0.1)
+        assert "end_of_turn_confidence_threshold" not in adapter._connection_params(), model
+
+
+def test_assemblyai_u3_rt_pro_language_support():
+    adapter = AssemblyAIStreamingAdapter(model="u3-rt-pro")
+
+    for lang in ("en", "es", "de", "fr", "pt", "it"):
+        assert adapter.supports_language(lang), lang
+    assert not adapter.supports_language("ja")
+    assert not adapter.supports_language("tr")
+
+
+def test_assemblyai_mode_validation():
+    with pytest.raises(ValueError, match="mode"):
+        AssemblyAIStreamingAdapter(mode="turbo")
+
+
+def test_assemblyai_mode_param_only_sent_for_u3_pro_models():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced")
+    assert adapter._connection_params()["mode"] == "balanced"
+
+    legacy = AssemblyAIStreamingAdapter(model="universal-streaming-multilingual", mode="balanced")
+    assert "mode" not in legacy._connection_params()
+
+
+def test_assemblyai_mode_is_part_of_adapter_identity():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced")
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (balanced)"
+
+
+def test_assemblyai_balanced_mode_adapter_uses_server_turn_silence_defaults():
+    adapter = AssemblyAIBalancedModeAdapter()
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced"
+    assert adapter.supports_language("ja")
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "mode": "balanced",
+    }
+
+
+def test_assemblyai_max_accuracy_mode_adapter_uses_server_turn_silence_defaults():
+    adapter = AssemblyAIMaxAccuracyModeAdapter()
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-max_accuracy"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (max_accuracy)"
+    assert adapter._connection_params() == {
+        "speech_model": "universal-3-5-pro",
+        "encoding": "pcm_s16le",
+        "sample_rate": "16000",
+        "mode": "max_accuracy",
+    }
+
+
+def test_assemblyai_url_override_and_default():
+    default_adapter = AssemblyAIStreamingAdapter()
+    assert default_adapter._connection_url().startswith("wss://streaming.assemblyai.com/v3/ws?")
+
+    staging = AssemblyAIStreamingAdapter(url="wss://streaming.example-staging.com/v3/ws")
+    assert staging._connection_url().startswith("wss://streaming.example-staging.com/v3/ws?")
+    assert "speech_model=universal-3-5-pro" in staging._connection_url()
+
+
+def test_assemblyai_api_key_env_override(monkeypatch):
+    from eot_harness.streaming_stt import resolve_api_key
+
+    monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
+    monkeypatch.setenv("MY_STAGING_KEY", "staging-secret")
+    adapter = AssemblyAIStreamingAdapter(api_key_env=("MY_STAGING_KEY",))
+
+    assert adapter.api_key_env == ("MY_STAGING_KEY",)
+    assert resolve_api_key(*adapter.api_key_env) == "staging-secret"
+    assert AssemblyAIStreamingAdapter().api_key_env == (
+        "ASSEMBLYAI_API_KEY",
+        "ASSEMBLY_API_KEY",
+        "ASSEMBLY_AI_KEY",
+    )
+
+
+def test_assemblyai_variant_labels_identity():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced", variant="staging")
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced-staging"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (balanced, staging)"
+
+    plain_variant = AssemblyAIStreamingAdapter(variant="staging")
+    assert plain_variant.adapter_id == "assemblyai/universal-3-5-pro-staging"
+    assert plain_variant.display_name == "AssemblyAI Universal-3.5 Pro (staging)"
+
+
+def test_assemblyai_watchdog_times_out_hung_turns(monkeypatch):
+    import asyncio
+
+    import eot_harness.assemblyai_adapter as mod
+
+    monkeypatch.setenv("ASSEMBLYAI_API_KEY", "aai-test-key")
+    monkeypatch.setattr(mod, "prepare_pcm16_audio", lambda row, sample_rate: (b"\x00\x00", 0.05))
+    adapter = AssemblyAIStreamingAdapter(watchdog_margin_sec=0.1)
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(adapter, "_replay_turn", hang)
+    with pytest.raises(RuntimeError, match="watchdog"):
+        asyncio.run(adapter.predict_turn({"id": "turn-1", "audio": None}, inference_interval=0.1))
+
+
+def test_assemblyai_display_name_tracks_model():
+    assert AssemblyAIStreamingAdapter(model="universal-3-5-pro").display_name == "AssemblyAI Universal-3.5 Pro"
+    # Matches the committed leaderboard artifacts for the previous default model.
+    assert AssemblyAIStreamingAdapter(model="universal-streaming-multilingual").display_name == "AssemblyAI"
+    assert AssemblyAIStreamingAdapter(model="u3-rt-pro").display_name == "AssemblyAI u3-rt-pro"
+
+
+def test_assemblyai_universal_streaming_multilingual_keeps_confidence_threshold():
+    adapter = AssemblyAIStreamingAdapter(model="universal-streaming-multilingual")
+
+    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
     assert adapter.supports_language("en")
-    assert adapter.supports_language("fr")
-    assert adapter.supports_language("de")
-    assert adapter.supports_language("es")
-    assert adapter.supports_language("it")
     assert adapter.supports_language("pt")
     assert not adapter.supports_language("ja")
-    assert resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY") == "aai-test-key"
     assert adapter._connection_params() == {
         "speech_model": "universal-streaming-multilingual",
         "encoding": "pcm_s16le",
@@ -96,6 +239,15 @@ def test_assemblyai_defaults_and_key(monkeypatch):
         "max_turn_silence": "3000",
         "end_of_turn_confidence_threshold": "0.1",
     }
+
+
+def test_assemblyai_cli_style_model_override_rebinds_params_and_languages():
+    adapter = AssemblyAIStreamingAdapter()
+    adapter.model = "universal-streaming-multilingual"
+
+    assert adapter.adapter_id == "assemblyai/universal-streaming-multilingual"
+    assert adapter._connection_params()["end_of_turn_confidence_threshold"] == "0.1"
+    assert not adapter.supports_language("ja")
 
 
 def test_assemblyai_english_model_supports_only_english():

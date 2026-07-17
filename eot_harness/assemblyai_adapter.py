@@ -19,6 +19,8 @@ from .streaming_stt import (
 )
 
 DEFAULT_ASSEMBLYAI_MODEL = "universal-3-5-pro"
+DEFAULT_ASSEMBLYAI_STREAMING_URL = "wss://streaming.assemblyai.com/v3/ws"
+DEFAULT_ASSEMBLYAI_API_KEY_ENV = ("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY")
 DEFAULT_CONCURRENCY = 4
 DEFAULT_MIN_TURN_SILENCE_MS = 100
 DEFAULT_MAX_TURN_SILENCE_MS = 3000
@@ -80,8 +82,9 @@ class AssemblyAIStreamingAdapter:
     @property
     def display_name(self) -> str:
         name = ASSEMBLYAI_DISPLAY_NAMES_BY_MODEL.get(self.model, f"AssemblyAI {self.model}")
-        if self.mode is not None:
-            name = f"{name} ({self.mode})"
+        qualifiers = [part for part in (self.mode, self.variant) if part is not None]
+        if qualifiers:
+            name = f"{name} ({', '.join(qualifiers)})"
         return name
 
     def __init__(
@@ -89,6 +92,9 @@ class AssemblyAIStreamingAdapter:
         *,
         model: str = DEFAULT_ASSEMBLYAI_MODEL,
         mode: str | None = None,
+        url: str = DEFAULT_ASSEMBLYAI_STREAMING_URL,
+        api_key_env: tuple[str, ...] = DEFAULT_ASSEMBLYAI_API_KEY_ENV,
+        variant: str | None = None,
         chunk_ms: int = DEFAULT_CHUNK_MS,
         concurrency: int = DEFAULT_CONCURRENCY,
         min_turn_silence: int | None = DEFAULT_MIN_TURN_SILENCE_MS,
@@ -99,6 +105,10 @@ class AssemblyAIStreamingAdapter:
             raise ValueError("model must be a non-empty string")
         if mode is not None and mode not in ASSEMBLYAI_MODES:
             raise ValueError(f"mode must be one of {sorted(ASSEMBLYAI_MODES)}")
+        if not url:
+            raise ValueError("url must be a non-empty string")
+        if not api_key_env:
+            raise ValueError("api_key_env must name at least one environment variable")
         if chunk_ms <= 0:
             raise ValueError("chunk_ms must be positive")
         if concurrency <= 0:
@@ -118,6 +128,9 @@ class AssemblyAIStreamingAdapter:
 
         self.model = model
         self.mode = mode
+        self.url = str(url)
+        self.api_key_env = tuple(api_key_env)
+        self.variant = variant
         self.chunk_ms = int(chunk_ms)
         self.concurrency = int(concurrency)
         self.min_turn_silence = None if min_turn_silence is None else int(min_turn_silence)
@@ -128,9 +141,12 @@ class AssemblyAIStreamingAdapter:
 
     @property
     def adapter_id(self) -> str:
+        suffix = self.model
         if self.mode is not None:
-            return f"assemblyai/{self.model}-mode-{self.mode}"
-        return f"assemblyai/{self.model}"
+            suffix = f"{suffix}-mode-{self.mode}"
+        if self.variant is not None:
+            suffix = f"{suffix}-{self.variant}"
+        return f"assemblyai/{suffix}"
 
     def supports_language(self, lang_code: str) -> bool:
         if self.model == "universal-3-5-pro":
@@ -153,7 +169,7 @@ class AssemblyAIStreamingAdapter:
     ) -> dict[str, Any]:
         return await self._replay_turn(
             row,
-            resolve_api_key("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY"),
+            resolve_api_key(*self.api_key_env),
             inference_interval=inference_interval,
         )
 
@@ -166,8 +182,7 @@ class AssemblyAIStreamingAdapter:
     ) -> dict[str, Any]:
         websockets = import_websockets()
         audio_bytes, total_audio_sec = prepare_pcm16_audio(row, sample_rate=SAMPLE_RATE)
-        params = self._connection_params()
-        url = f"wss://streaming.assemblyai.com/v3/ws?{urlencode(params)}"
+        url = self._connection_url()
 
         events: list[dict[str, Any]] = []
         chunk_size = chunk_size_bytes(sample_rate=SAMPLE_RATE, chunk_ms=self.chunk_ms)
@@ -203,6 +218,9 @@ class AssemblyAIStreamingAdapter:
                 inference_interval=inference_interval,
             ),
         }
+
+    def _connection_url(self) -> str:
+        return f"{self.url}?{urlencode(self._connection_params())}"
 
     def _connection_params(self) -> dict[str, str]:
         params = {

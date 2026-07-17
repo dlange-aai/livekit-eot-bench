@@ -164,6 +164,42 @@ def test_assemblyai_max_accuracy_mode_adapter_uses_server_turn_silence_defaults(
     }
 
 
+def test_assemblyai_url_override_and_default():
+    default_adapter = AssemblyAIStreamingAdapter()
+    assert default_adapter._connection_url().startswith("wss://streaming.assemblyai.com/v3/ws?")
+
+    staging = AssemblyAIStreamingAdapter(url="wss://streaming.example-staging.com/v3/ws")
+    assert staging._connection_url().startswith("wss://streaming.example-staging.com/v3/ws?")
+    assert "speech_model=universal-3-5-pro" in staging._connection_url()
+
+
+def test_assemblyai_api_key_env_override(monkeypatch):
+    from eot_harness.streaming_stt import resolve_api_key
+
+    monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
+    monkeypatch.setenv("MY_STAGING_KEY", "staging-secret")
+    adapter = AssemblyAIStreamingAdapter(api_key_env=("MY_STAGING_KEY",))
+
+    assert adapter.api_key_env == ("MY_STAGING_KEY",)
+    assert resolve_api_key(*adapter.api_key_env) == "staging-secret"
+    assert AssemblyAIStreamingAdapter().api_key_env == (
+        "ASSEMBLYAI_API_KEY",
+        "ASSEMBLY_API_KEY",
+        "ASSEMBLY_AI_KEY",
+    )
+
+
+def test_assemblyai_variant_labels_identity():
+    adapter = AssemblyAIStreamingAdapter(mode="balanced", variant="staging")
+
+    assert adapter.adapter_id == "assemblyai/universal-3-5-pro-mode-balanced-staging"
+    assert adapter.display_name == "AssemblyAI Universal-3.5 Pro (balanced, staging)"
+
+    plain_variant = AssemblyAIStreamingAdapter(variant="staging")
+    assert plain_variant.adapter_id == "assemblyai/universal-3-5-pro-staging"
+    assert plain_variant.display_name == "AssemblyAI Universal-3.5 Pro (staging)"
+
+
 def test_assemblyai_display_name_tracks_model():
     assert AssemblyAIStreamingAdapter(model="universal-3-5-pro").display_name == "AssemblyAI Universal-3.5 Pro"
     # Matches the committed leaderboard artifacts for the previous default model.

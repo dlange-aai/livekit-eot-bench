@@ -20,6 +20,10 @@ from .streaming_stt import (
 
 DEFAULT_ASSEMBLYAI_MODEL = "universal-3-5-pro"
 DEFAULT_ASSEMBLYAI_STREAMING_URL = "wss://streaming.assemblyai.com/v3/ws"
+# Extra wall-clock allowance beyond the real-time audio replay before a turn is
+# abandoned. Guards against sessions whose server stops consuming audio, which
+# would otherwise hang a concurrency slot forever.
+DEFAULT_WATCHDOG_MARGIN_SEC = 60.0
 DEFAULT_ASSEMBLYAI_API_KEY_ENV = ("ASSEMBLYAI_API_KEY", "ASSEMBLY_API_KEY", "ASSEMBLY_AI_KEY")
 DEFAULT_CONCURRENCY = 4
 DEFAULT_MIN_TURN_SILENCE_MS = 100
@@ -95,6 +99,7 @@ class AssemblyAIStreamingAdapter:
         url: str = DEFAULT_ASSEMBLYAI_STREAMING_URL,
         api_key_env: tuple[str, ...] = DEFAULT_ASSEMBLYAI_API_KEY_ENV,
         variant: str | None = None,
+        watchdog_margin_sec: float = DEFAULT_WATCHDOG_MARGIN_SEC,
         chunk_ms: int = DEFAULT_CHUNK_MS,
         concurrency: int = DEFAULT_CONCURRENCY,
         min_turn_silence: int | None = DEFAULT_MIN_TURN_SILENCE_MS,
@@ -109,6 +114,8 @@ class AssemblyAIStreamingAdapter:
             raise ValueError("url must be a non-empty string")
         if not api_key_env:
             raise ValueError("api_key_env must name at least one environment variable")
+        if watchdog_margin_sec <= 0:
+            raise ValueError("watchdog_margin_sec must be positive")
         if chunk_ms <= 0:
             raise ValueError("chunk_ms must be positive")
         if concurrency <= 0:
@@ -131,6 +138,7 @@ class AssemblyAIStreamingAdapter:
         self.url = str(url)
         self.api_key_env = tuple(api_key_env)
         self.variant = variant
+        self.watchdog_margin_sec = float(watchdog_margin_sec)
         self.chunk_ms = int(chunk_ms)
         self.concurrency = int(concurrency)
         self.min_turn_silence = None if min_turn_silence is None else int(min_turn_silence)
@@ -167,21 +175,34 @@ class AssemblyAIStreamingAdapter:
         *,
         inference_interval: float = DEFAULT_INFERENCE_INTERVAL,
     ) -> dict[str, Any]:
-        return await self._replay_turn(
-            row,
-            resolve_api_key(*self.api_key_env),
-            inference_interval=inference_interval,
-        )
+        audio_bytes, total_audio_sec = prepare_pcm16_audio(row, sample_rate=SAMPLE_RATE)
+        timeout = total_audio_sec + self.watchdog_margin_sec
+        try:
+            return await asyncio.wait_for(
+                self._replay_turn(
+                    row,
+                    resolve_api_key(*self.api_key_env),
+                    audio_bytes=audio_bytes,
+                    total_audio_sec=total_audio_sec,
+                    inference_interval=inference_interval,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"AssemblyAI turn watchdog timed out after {timeout:.0f}s on row {row['id']!r}.",
+            ) from exc
 
     async def _replay_turn(
         self,
         row: dict[str, Any],
         api_key: str,
         *,
+        audio_bytes: bytes,
+        total_audio_sec: float,
         inference_interval: float,
     ) -> dict[str, Any]:
         websockets = import_websockets()
-        audio_bytes, total_audio_sec = prepare_pcm16_audio(row, sample_rate=SAMPLE_RATE)
         url = self._connection_url()
 
         events: list[dict[str, Any]] = []

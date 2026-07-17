@@ -200,6 +200,23 @@ def test_assemblyai_variant_labels_identity():
     assert plain_variant.display_name == "AssemblyAI Universal-3.5 Pro (staging)"
 
 
+def test_assemblyai_watchdog_times_out_hung_turns(monkeypatch):
+    import asyncio
+
+    import eot_harness.assemblyai_adapter as mod
+
+    monkeypatch.setenv("ASSEMBLYAI_API_KEY", "aai-test-key")
+    monkeypatch.setattr(mod, "prepare_pcm16_audio", lambda row, sample_rate: (b"\x00\x00", 0.05))
+    adapter = AssemblyAIStreamingAdapter(watchdog_margin_sec=0.1)
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(adapter, "_replay_turn", hang)
+    with pytest.raises(RuntimeError, match="watchdog"):
+        asyncio.run(adapter.predict_turn({"id": "turn-1", "audio": None}, inference_interval=0.1))
+
+
 def test_assemblyai_display_name_tracks_model():
     assert AssemblyAIStreamingAdapter(model="universal-3-5-pro").display_name == "AssemblyAI Universal-3.5 Pro"
     # Matches the committed leaderboard artifacts for the previous default model.
